@@ -1,0 +1,297 @@
+#############################################
+# rules.yaml
+# Regras de validação para o validador NFCom 62
+#############################################
+
+#############################################
+# 1. CAMPOS OBRIGATÓRIOS (Manual NFCom – Anexo II)
+#############################################
+
+# 1.1 Destinatário / Assinante / Fatura
+
+- id: R_DEST_XNOME_OBRIG
+  descricao: "Nome do destinatário deve estar preenchido"
+  tipo: "obrigatorio"
+  xpath: ".//n:dest/n:xNome"
+  parametros: {}
+  mensagem_erro: "Nome do destinatário não informado (dest/xNome)."
+  sugestao_correcao: "Preencher o nome do destinatário conforme cadastro do assinante."
+  nivel: "erro"
+
+- id: R_DEST_ID_OBRIG
+  descricao: "Identificação do destinatário (CNPJ/CPF/idOutros) deve estar preenchida"
+  tipo: "obrigatorio"
+  xpath: ".//n:dest/n:CNPJ | .//n:dest/n:CPF | .//n:dest/n:idOutros"
+  parametros: {}
+  mensagem_erro: "CNPJ/CPF/idOutros do destinatário não informado."
+  sugestao_correcao: "Informar o CNPJ, CPF ou idOutros do destinatário conforme o caso."
+  nivel: "erro"
+
+# Regras mais seguras para endereço: validar campos filhos, não o grupo inteiro
+- id: R_DEST_XLGR_OBRIG
+  descricao: "Logradouro do destinatário deve estar preenchido"
+  tipo: "obrigatorio"
+  xpath: ".//n:dest/n:enderDest/n:xLgr"
+  parametros: {}
+  mensagem_erro: "Logradouro do destinatário (enderDest/xLgr) não informado."
+  sugestao_correcao: "Preencher o logradouro do destinatário."
+  nivel: "erro"
+
+- id: R_DEST_NRO_OBRIG
+  descricao: "Número do endereço do destinatário deve estar preenchido"
+  tipo: "obrigatorio"
+  xpath: ".//n:dest/n:enderDest/n:nro"
+  parametros: {}
+  mensagem_erro: "Número do endereço do destinatário (enderDest/nro) não informado."
+  sugestao_correcao: "Preencher o número do endereço do destinatário."
+  nivel: "erro"
+
+- id: R_ASSINANTE_IDCOD_OBRIG
+  descricao: "Código do assinante (assinante/iCodAssinante) deve estar preenchido"
+  tipo: "obrigatorio"
+  xpath: ".//n:assinante/n:iCodAssinante"
+  parametros: {}
+  mensagem_erro: "iCodAssinante não informado para o assinante."
+  sugestao_correcao: "Informar o código único do assinante (iCodAssinante) conforme cadastro."
+  nivel: "erro"
+
+- id: R_G_FAT_DVENC_OBRIG
+  descricao: "Data de vencimento da fatura (gFat/dVencFat) deve estar preenchida"
+  tipo: "obrigatorio"
+  xpath: ".//n:gFat/n:dVencFat"
+  parametros: {}
+  mensagem_erro: "Data de vencimento da fatura (gFat/dVencFat) não informada."
+  sugestao_correcao: "Preencher a data de vencimento da fatura conforme acordado com o assinante."
+  nivel: "erro"
+
+- id: R_G_FAT_COMPET_OBRIG
+  descricao: "Competência da medição (gFat/CompetFat) deve estar preenchida"
+  tipo: "obrigatorio"
+  xpath: ".//n:gFat/n:CompetFat"
+  parametros: {}
+  mensagem_erro: "Competência da NFCom (gFat/CompetFat) não informada."
+  sugestao_correcao: "Informar a competência da medição da NFCom (gFat/CompetFat)."
+  nivel: "erro"
+
+- id: R_TOTAL_VNF_OBRIG
+  descricao: "Valor total da fatura (total/vNF) deve estar preenchido"
+  tipo: "obrigatorio"
+  xpath: ".//n:total/n:vNF"
+  parametros: {}
+  mensagem_erro: "Valor total da fatura (total/vNF) não informado."
+  sugestao_correcao: "Preencher o valor total da fatura no grupo total/vNF."
+  nivel: "erro"
+
+
+# 1.2 Identificação da NFCom / QR Code
+
+- id: R_IDE_NUMERO_OBRIG
+  descricao: "Número da NFCom (ide/nNF) deve estar preenchido"
+  tipo: "obrigatorio"
+  xpath: ".//n:ide/n:nNF"
+  parametros: {}
+  mensagem_erro: "Número da NFCom (ide/nNF) não informado."
+  sugestao_correcao: "Preencher o número da NFCom no grupo ide/nNF."
+  nivel: "erro"
+
+- id: R_IDE_SERIE_OBRIG
+  descricao: "Série da NFCom (ide/serie) deve estar preenchida"
+  tipo: "obrigatorio"
+  xpath: ".//n:ide/n:serie"
+  parametros: {}
+  mensagem_erro: "Série da NFCom (ide/serie) não informada."
+  sugestao_correcao: "Preencher a série da NFCom no grupo ide/serie."
+  nivel: "erro"
+
+- id: R_IDE_DHEMI_OBRIG
+  descricao: "Data/hora de emissão da NFCom (ide/dhEmi) deve estar preenchida"
+  tipo: "obrigatorio"
+  xpath: ".//n:ide/n:dhEmi"
+  parametros: {}
+  mensagem_erro: "Data/hora de emissão da NFCom (ide/dhEmi) não informada."
+  sugestao_correcao: "Preencher a data/hora de emissão (UTC) no grupo ide/dhEmi."
+  nivel: "erro"
+
+- id: R_QRCOD_NFCOM_OBRIG
+  descricao: "Conteúdo do QR Code da NFCom (qrCodNFCom) deve estar preenchido"
+  tipo: "obrigatorio"
+  xpath: ".//n:qrCodNFCom"
+  parametros: {}
+  mensagem_erro: "Campo qrCodNFCom não informado."
+  sugestao_correcao: "Gerar e informar o conteúdo do QR Code conforme especificação do MOC."
+  nivel: "erro"
+
+
+# 1.3 Itens (prod / imposto)
+
+- id: R_DET_XPROD_OBRIG
+  descricao: "Descrição do item (prod/xProd) deve estar preenchida"
+  tipo: "obrigatorio"
+  xpath: ".//n:det/n:prod/n:xProd"
+  parametros: {}
+  mensagem_erro: "Descrição do item (prod/xProd) não informada."
+  sugestao_correcao: "Informar a descrição do item conforme serviço prestado."
+  nivel: "erro"
+
+- id: R_DET_UMED_ALERTA
+  descricao: "Unidade de medida (prod/uMed) deve ser informada quando o item for mensurável"
+  tipo: "obrigatorio"
+  xpath: ".//n:det/n:prod/n:uMed"
+  parametros: {}
+  mensagem_erro: "Unidade de medida (prod/uMed) não informada."
+  sugestao_correcao: "Preencher a unidade de medida para itens mensuráveis."
+  nivel: "alerta"
+
+- id: R_DET_QFATURADA_OBRIG
+  descricao: "Quantidade faturada (prod/qFaturada) deve estar preenchida"
+  tipo: "obrigatorio"
+  xpath: ".//n:det/n:prod/n:qFaturada"
+  parametros: {}
+  mensagem_erro: "Quantidade faturada (prod/qFaturada) não informada."
+  sugestao_correcao: "Preencher a quantidade faturada no grupo prod/qFaturada."
+  nivel: "erro"
+
+- id: R_DET_VITEM_OBRIG
+  descricao: "Valor unitário do item (prod/vItem) deve estar preenchido"
+  tipo: "obrigatorio"
+  xpath: ".//n:det/n:prod/n:vItem"
+  parametros: {}
+  mensagem_erro: "Valor unitário (prod/vItem) não informado."
+  sugestao_correcao: "Preencher o valor unitário do item em prod/vItem."
+  nivel: "erro"
+
+- id: R_DET_VPROD_OBRIG
+  descricao: "Valor total do item (prod/vProd) deve estar preenchido"
+  tipo: "obrigatorio"
+  xpath: ".//n:det/n:prod/n:vProd"
+  parametros: {}
+  mensagem_erro: "Valor total do item (prod/vProd) não informado."
+  sugestao_correcao: "Preencher o valor total do item em prod/vProd."
+  nivel: "erro"
+
+- id: R_DET_PIS_VPIS_OBRIG
+  descricao: "Valor de PIS (PIS/vPIS) deve estar preenchido quando houver PIS"
+  tipo: "obrigatorio"
+  xpath: ".//n:det/n:imposto/n:PIS/n:vPIS"
+  parametros: {}
+  mensagem_erro: "Valor de PIS (PIS/vPIS) não informado."
+  sugestao_correcao: "Preencher o valor de PIS em PIS/vPIS, quando devido."
+  nivel: "alerta"
+
+- id: R_DET_COFINS_VCOFINS_OBRIG
+  descricao: "Valor de COFINS (COFINS/vCOFINS) deve estar preenchido quando houver COFINS"
+  tipo: "obrigatorio"
+  xpath: ".//n:det/n:imposto/n:COFINS/n:vCOFINS"
+  parametros: {}
+  mensagem_erro: "Valor de COFINS (COFINS/vCOFINS) não informado."
+  sugestao_correcao: "Preencher o valor de COFINS em COFINS/vCOFINS, quando devido."
+  nivel: "alerta"
+
+
+##########################################
+# 2. REGRAS FISCAIS INTERNAS / CHECKLIST
+##########################################
+
+- id: R_CFOP_FORMATO
+  descricao: "CFOP deve ter 4 dígitos numéricos"
+  tipo: "regex"
+  xpath: ".//n:det/n:prod/n:CFOP"
+  parametros:
+    pattern: "^[0-9]{4}$"
+  mensagem_erro: "CFOP fora do padrão de 4 dígitos numéricos."
+  sugestao_correcao: "Verificar CFOP de acordo com a tabela oficial aplicável ao serviço de comunicação."
+  nivel: "erro"
+
+- id: R_CRT_OBRIGATORIO
+  descricao: "Regime tributário do emitente (emit/CRT) deve estar preenchido"
+  tipo: "obrigatorio"
+  xpath: ".//n:emit/n:CRT"
+  parametros: {}
+  mensagem_erro: "Campo emit/CRT (regime tributário) não informado."
+  sugestao_correcao: "Preencher o regime tributário do emitente (CRT) conforme cadastro da empresa."
+  nivel: "erro"
+
+
+# 2.2 Regime Normal (CRT = 3)
+
+- id: R_REGNORMAL_ICMS_CST
+  descricao: "Regime Normal: ICMS CST deve ser 00 - Tributada Integralmente"
+  tipo: "condicional"
+  xpath: ".//n:det"
+  parametros:
+    condicao_xpath: "../../n:emit/n:CRT"
+    condicao_valores: ["3"]
+    alvo_xpath: "./n:imposto/n:ICMS/n:CST"
+    alvo_valor_esperado: "00"
+  mensagem_erro: "Para Regime Normal, o CST de ICMS deveria ser 00 - Tributada Integralmente."
+  sugestao_correcao: "Ajustar o CST de ICMS para 00 nos itens da NFCom do emitente em Regime Normal."
+  nivel: "erro"
+
+- id: R_REGNORMAL_PIS_CST
+  descricao: "Regime Normal: PIS CST deve ser 01 - Operação Tribútavel"
+  tipo: "condicional"
+  xpath: ".//n:det"
+  parametros:
+    condicao_xpath: "../../n:emit/n:CRT"
+    condicao_valores: ["3"]
+    alvo_xpath: "./n:imposto/n:PIS/n:CST"
+    alvo_valor_esperado: "01"
+  mensagem_erro: "Para Regime Normal, o CST de PIS deveria ser 01 - Operação tributável."
+  sugestao_correcao: "Ajustar o CST de PIS para 01, conforme parametrização padrão do regime normal."
+  nivel: "erro"
+
+- id: R_REGNORMAL_COFINS_CST
+  descricao: "Regime Normal: COFINS CST deve ser 01 - Operação Tribútavel"
+  tipo: "condicional"
+  xpath: ".//n:det"
+  parametros:
+    condicao_xpath: "../../n:emit/n:CRT"
+    condicao_valores: ["3"]
+    alvo_xpath: "./n:imposto/n:COFINS/n:CST"
+    alvo_valor_esperado: "01"
+  mensagem_erro: "Para Regime Normal, o CST de COFINS deveria ser 01 - Operação tributável."
+  sugestao_correcao: "Ajustar o CST de COFINS para 01, conforme parametrização padrão do regime normal."
+  nivel: "erro"
+
+
+# 2.3 Simples Nacional (CRT = 1 ou 2)
+
+- id: R_SIMPLES_ICMS_CST
+  descricao: "Simples Nacional: ICMS CST recomendado é 90 - Outras saídas (alíquota 0%)"
+  tipo: "condicional"
+  xpath: ".//n:det"
+  parametros:
+    condicao_xpath: "../../n:emit/n:CRT"
+    condicao_valores: ["1", "2"]
+    alvo_xpath: "./n:imposto/n:ICMSSN/n:CST"
+    alvo_valor_esperado: "90"
+  mensagem_erro: "Para Simples Nacional, o CST de ICMS recomendado é 90 - Outras saídas (alíquota 0%)."
+  sugestao_correcao: "Ajustar o CST de ICMS para 90 nos itens da NFCom em Simples Nacional, salvo exceções específicas."
+  nivel: "alerta"
+
+- id: R_SIMPLES_PIS_COFINS_ALERTA
+  descricao: "Simples Nacional: verificar se PIS/COFINS usam CST 49 ou 99 (alíquota 0%)"
+  tipo: "condicional"
+  xpath: ".//n:det"
+  parametros:
+    condicao_xpath: "../../n:emit/n:CRT"
+    condicao_valores: ["1", "2"]
+    alvo_xpath: "./n:imposto/n:PIS/n:CST"
+  mensagem_erro: "Para Simples Nacional, recomenda-se usar CST 49 ou 99 para PIS/COFINS (alíquota 0%)."
+  sugestao_correcao: "Verificar CST de PIS/COFINS (preferencialmente 49 ou 99), conforme parametrização da empresa."
+  nivel: "alerta"
+
+
+# 2.4 CFOP PJ contribuinte (complementar à regra Python de PF/PJ não contrib.)
+
+- id: R_CFOP_PJ_CONTRIB_ALERTA
+  descricao: "PJ contribuinte: CFOP preferencialmente 5303 (intra) ou 6303 (inter)"
+  tipo: "condicional"
+  xpath: ".//n:det"
+  parametros:
+    condicao_xpath: "../../n:dest/n:indIEDest"
+    condicao_valores: ["1", "2"]
+    alvo_xpath: "./n:prod/n:CFOP"
+  mensagem_erro: "CFOP pode não estar coerente com PJ contribuinte (esperado 5303 ou 6303 conforme UF)."
+  sugestao_correcao: "Para PJ contribuinte, usar 5303 (dentro do estado) ou 6303 (fora do estado), conforme checklist."
+  nivel: "alerta"

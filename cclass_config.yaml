@@ -1,0 +1,21 @@
+# cclass_config.yaml
+# Configuração de CClass (SCM x SVA) utilizada nas regras Python.
+
+# CClass que representam SCM
+scm_cclasses:
+  - "0100401"   # Assinatura de serviço de comunicação multimídia (SCM)
+
+# CClass que representam SVA (Serviços de Valor Adicionado)
+sva_cclasses:
+  - "1100101"   # Cobrança de Serviços de Terceiros
+  - "0400101"   # Serviço Não Medido - Telefonia
+  - "0400301"   # Serviço Não Medido - TV por assinatura
+  - "0600201"   # Streaming de vídeo e áudio
+  - "0800601"   # Roteador / Wi-Fi premium
+  - "0600601"   # Outros serviços de valor adicionado
+
+# Valor de CFOP considerado "zerado" para SVA.
+# A regra Python aceita:
+#   - CFOP ausente → OK
+#   - CFOP diferente deste valor → ERRO
+cfop_sva_zerado: "0000"
