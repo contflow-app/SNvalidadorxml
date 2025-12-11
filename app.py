@@ -129,11 +129,19 @@ def classify_item_scm_sva(xprod: str, cclass: str, cclass_cfg: Dict[str, Any]) -
       - descrição xProd (palavras-chave)
       - cClass informado (listas config: scm_cclasses, sva_cclasses)
 
+    Regra conservadora:
+      - Só considera "sugestão forte" quando:
+        * descrição indica SCM e cClass indica SVA, ou
+        * descrição indica SVA e cClass indica SCM.
+      - Nos demais casos, ou mantém o cClass ou marca INDEFINIDO/descrição, mas sem força
+        para sugerir mudança.
+
     Retorna dict com:
-      - class_por_descricao: "SCM" / "SVA" / "INDEFINIDO"
+      - class_por_descricao: "SCM" / "SVA" / "AMBIGUO" / "INDEFINIDO"
       - class_por_cclass: "SCM" / "SVA" / "INDEFINIDO"
-      - class_final_sugerida: "SCM" / "SVA" / "INDEFINIDO" / "AMBIGUO"
+      - class_final_sugerida: "SCM" / "SVA" / "INDEFINIDO"
       - motivo: texto explicando lógica
+      - sugestao_forte: True/False
     """
     desc_norm = normalize_text(xprod or "")
     cclass = (cclass or "").strip()
@@ -162,34 +170,42 @@ def classify_item_scm_sva(xprod: str, cclass: str, cclass_cfg: Dict[str, Any]) -
     else:
         class_cclass = "INDEFINIDO"
 
-    # 3) Classificação final sugerida
+    # 3) Classificação final super conservadora
+    class_final = class_cclass
     motivo = []
+    sugestao_forte = False
 
-    # Se descrição é clara, priorizamos descrição
-    if class_desc in ("SCM", "SVA"):
-        class_final = class_desc
-        motivo.append(f"Descrição sugere {class_desc}.")
-        if class_cclass not in ("INDEFINIDO", class_desc):
-            motivo.append(f"cClass indica {class_cclass}, divergente da descrição.")
-    elif class_desc == "AMBIGUO":
-        class_final = "AMBIGUO"
-        motivo.append("Descrição ambígua (indica SCM e SVA). Revisão manual recomendada.")
-        if class_cclass != "INDEFINIDO":
-            motivo.append(f"cClass atual indica {class_cclass}.")
+    # Casos de sugestão forte: descrição e cClass em conflito direto
+    if class_desc == "SCM" and class_cclass == "SVA":
+        class_final = "SCM"
+        sugestao_forte = True
+        motivo.append("Descrição contém palavras-chave de SCM; cClass está mapeado como SVA.")
+    elif class_desc == "SVA" and class_cclass == "SCM":
+        class_final = "SVA"
+        sugestao_forte = True
+        motivo.append("Descrição contém palavras-chave de SVA; cClass está mapeado como SCM.")
     else:
-        # Sem indicação forte pela descrição → usar cClass
+        # Sem conflito direto forte
         if class_cclass in ("SCM", "SVA"):
             class_final = class_cclass
-            motivo.append(f"Sem indicação clara na descrição. Usando cClass ({class_cclass}).")
+            motivo.append(f"Classificação mantida pelo cClass ({class_cclass}), sem evidência forte de erro.")
+        elif class_desc in ("SCM", "SVA"):
+            # Descrição sugere algo, mas sem cClass definido: ainda assim é fraco
+            class_final = class_desc
+            motivo.append(
+                f"Descrição sugere {class_desc}, porém sem mapeamento de cClass. "
+                "Não é tratada como sugestão forte de correção."
+            )
         else:
             class_final = "INDEFINIDO"
-            motivo.append("Sem indicação clara na descrição nem no cClass. Revisão manual recomendada.")
+            motivo.append("Sem palavras-chave claras na descrição nem mapeamento de cClass. Revisão manual se necessário.")
 
     return {
         "class_por_descricao": class_desc,
         "class_por_cclass": class_cclass,
         "class_final_sugerida": class_final,
-        "motivo": " ".join(motivo)
+        "motivo": " ".join(motivo),
+        "sugestao_forte": sugestao_forte,
     }
 
 
@@ -661,6 +677,7 @@ def extract_item_details(tree, file_name, cclass_cfg: Dict[str, Any]) -> List[Di
             "class_cclass": class_info["class_por_cclass"],
             "class_final_sugerida": class_info["class_final_sugerida"],
             "motivo_classificacao": class_info["motivo"],
+            "sugestao_forte": class_info["sugestao_forte"],
         })
 
     return itens
@@ -721,11 +738,21 @@ def generate_corrected_xml(tree, cclass_cfg, corrigir_descontos: bool, usar_clas
         xprod_text = (xprod_nodes[0].text or "").strip() if xprod_nodes else ""
         cfop_text = (cfop_nodes[0].text or "").strip() if cfop_nodes else ""
 
-        # Classificação para correção
+        # Classificação "forte" ou fallback por cClass
         if usar_class_inteligente:
             class_info = classify_item_scm_sva(xprod_text, cclass_text, cclass_cfg)
-            class_final = class_info["class_final_sugerida"]
+            if class_info["sugestao_forte"]:
+                class_final = class_info["class_final_sugerida"]
+            else:
+                # Sem sugestão forte → volta para cClass
+                if cclass_text in sva_cclasses:
+                    class_final = "SVA"
+                elif cclass_text in scm_cclasses:
+                    class_final = "SCM"
+                else:
+                    class_final = "INDEFINIDO"
         else:
+            # Não usar classificação inteligente, apenas cClass
             if cclass_text in sva_cclasses:
                 class_final = "SVA"
             elif cclass_text in scm_cclasses:
@@ -733,7 +760,7 @@ def generate_corrected_xml(tree, cclass_cfg, corrigir_descontos: bool, usar_clas
             else:
                 class_final = "INDEFINIDO"
 
-        # 1) Remoção de CFOP de SVA (apenas se classificado como SVA)
+        # 1) Remoção de CFOP de SVA (apenas se class_final SVA)
         if class_final == "SVA" and cfop_nodes:
             for node in cfop_nodes:
                 parent = node.getparent()
@@ -1049,8 +1076,7 @@ def main():
         value=False,
         help=(
             "Quando marcado, a remoção de CFOP e o ajuste de CFOP (5307/6307 para PF/PJ não contribuinte) "
-            "serão baseados na classificação sugerida (SCM/SVA) pela descrição do item. "
-            "Recomenda-se rodar primeiro sem marcar, revisar as sugestões na tela, e depois habilitar."
+            "serão baseados SOMENTE em sugestões fortes, onde descrição e cClass estão claramente em conflito."
         )
     )
 
@@ -1212,12 +1238,11 @@ def main():
         # Monta DataFrames globais de itens
         df_itens = pd.DataFrame(itens_detalhe) if itens_detalhe else pd.DataFrame()
 
-        # Propostas de reclassificação SCM/SVA (para revisão)
+        # Propostas de reclassificação SCM/SVA (para revisão, apenas sugestões fortes)
         if not df_itens.empty:
             df_class_sug = df_itens.copy()
-            # Regra simples: divergências ou ambiguidades
             divergentes = df_class_sug[
-                (df_class_sug["class_final_sugerida"] != "INDEFINIDO")
+                (df_class_sug["sugestao_forte"] == True)
                 & (df_class_sug["class_final_sugerida"] != df_class_sug["class_cclass"])
             ]
         else:
@@ -1225,10 +1250,10 @@ def main():
             divergentes = pd.DataFrame()
 
         if not divergentes.empty:
-            st.subheader("Propostas de classificação SCM/SVA (para conferência)")
+            st.subheader("Propostas de classificação SCM/SVA (sugestões fortes)")
             st.info(
-                "A tabela abaixo mostra itens em que a descrição sugere uma classificação diferente do cClass. "
-                "Use isto para revisar antes de habilitar a opção de classificação inteligente na barra lateral."
+                "A tabela abaixo mostra apenas casos em que a descrição tem palavras-chave claras "
+                "e está em conflito direto com o cClass (alta probabilidade de erro de classificação)."
             )
             st.dataframe(
                 divergentes[
@@ -1241,8 +1266,8 @@ def main():
             )
         else:
             st.info(
-                "Nenhuma divergência relevante de classificação SCM/SVA encontrada entre descrição e cClass, "
-                "ou nenhum item processado."
+                "Nenhuma sugestão forte de reclassificação SCM/SVA foi identificada "
+                "(ou nenhum item processado)."
             )
 
         if not df_itens.empty:
@@ -1297,7 +1322,7 @@ def main():
         })
         resumo_rows.append({
             "Métrica": "XMLs ativos (mantidos)",
-            "Valor": len(xml_resultados)
+            "Valor": len(xml_resultosos := xml_resultados)
         })
         resumo_rows.append({
             "Métrica": "XMLs cancelados (excluídos das validações/faturamento)",
