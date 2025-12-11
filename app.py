@@ -264,6 +264,48 @@ def extract_chave_acesso(tree: etree._ElementTree) -> str:
     return m2.group(0) if m2 else ""
 
 
+def detect_cancelamento_event_bytes(xml_bytes: bytes) -> (bool, str | None):
+    """
+    Detecta se o XML é um EVENTO de cancelamento de NF (NFCom ou NFe),
+    usando:
+      - tpEvento = 110111
+      - xEvento contendo 'cancelamento'
+    Retorna (is_cancel, chave_associada_ou_none)
+    """
+    try:
+        tree = parse_xml(xml_bytes)
+    except Exception:
+        return False, None
+
+    root = tree.getroot()
+    ns = get_ns(tree)
+
+    if ns:
+        tp_nodes = root.xpath(".//n:tpEvento | .//tpEvento", namespaces=ns)
+        xevt_nodes = root.xpath(".//n:xEvento | .//xEvento", namespaces=ns)
+        ch_nodes = root.xpath(".//n:chNFCom | .//n:chNFe | .//chNFCom | .//chNFe", namespaces=ns)
+    else:
+        tp_nodes = root.xpath(".//tpEvento")
+        xevt_nodes = root.xpath(".//xEvento")
+        ch_nodes = root.xpath(".//chNFCom | .//chNFe")
+
+    if not tp_nodes:
+        return False, None
+
+    tp = (tp_nodes[0].text or "").strip()
+    if tp != "110111":
+        return False, None
+
+    # Confirma que é de cancelamento
+    if xevt_nodes:
+        xevt_txt = normalize_text(xevt_nodes[0].text or "")
+        if "cancelamento" not in xevt_txt:
+            return False, None
+
+    chave = (ch_nodes[0].text or "").strip() if ch_nodes else None
+    return True, chave
+
+
 # ====================================================
 # Motor de REGRAS (rules.yaml)
 # ====================================================
@@ -298,7 +340,7 @@ def apply_rule_to_node(rule: Dict[str, Any], node, file_name: str) -> List[Dict[
                 "valor_encontrado": txt,
                 "mensagem_erro": rule.get("mensagem_erro"),
                 "sugestao_correcao": rule.get("sugestao_correcao"),
-                "nivel": rule.get("nivel", "erro"),
+                "nivel": "erro",
             })
 
     elif tipo == "lista_valores":
@@ -1108,7 +1150,7 @@ def main():
         erros_invalidos: List[Dict[str, Any]] = []
         itens_detalhe: List[Dict[str, Any]] = []
         xml_resultados: List[Dict[str, Any]] = []   # XMLs ATIVOS (vão para ZIP/relatórios)
-        canceled_xmls: List[Dict[str, Any]] = []    # XMLs CANCELADOS (filtrados)
+        canceled_xmls: List[Dict[str, Any]] = []    # XMLs CANCELADOS (eventos + chaves manuais)
 
         for f in uploaded:
             nome = f.name
@@ -1121,12 +1163,23 @@ def main():
                         with zipfile.ZipFile(io.BytesIO(content)) as zf:
                             for info in zf.infolist():
                                 if info.filename.lower().endswith(".xml"):
+                                    base_name = info.filename.replace("\\", "/").replace("/", "_")
                                     try:
                                         xml_bytes = zf.read(info)
-                                        logical_name = f"{nome}::{info.filename}"
 
-                                        # Flatten do caminho interno: pasta1/arquivo.xml → pasta1_arquivo.xml
-                                        base_name = info.filename.replace("\\", "/").replace("/", "_")
+                                        # 1) Detecta se é EVENTO de cancelamento
+                                        is_canc, chave_evt = detect_cancelamento_event_bytes(xml_bytes)
+                                        if is_canc:
+                                            canceled_xmls.append({
+                                                "base_name": base_name,
+                                                "chave": chave_evt,
+                                                "tipo": "evento_cancelamento"
+                                            })
+                                            # Não processa como NF
+                                            continue
+
+                                        # 2) Processa como NFCom normal
+                                        logical_name = f"{nome}::{info.filename}"
 
                                         er, det, corr_bytes, foi_corrigido, chave = process_single_xml_bytes(
                                             xml_bytes,
@@ -1137,11 +1190,12 @@ def main():
                                             usar_class_inteligente,
                                         )
 
-                                        # Se houver relação de canceladas e a chave estiver nela → filtra
+                                        # Se houver relação de canceladas manual e a chave estiver nela → filtra
                                         if cancel_keys and chave and chave in cancel_keys:
                                             canceled_xmls.append({
                                                 "base_name": base_name,
-                                                "chave": chave
+                                                "chave": chave,
+                                                "tipo": "lista_canceladas"
                                             })
                                             continue
 
@@ -1166,8 +1220,21 @@ def main():
                         })
                 else:
                     # XML individual
-                    logical_name = nome
                     base_name = nome
+
+                    # 1) Detecta se é EVENTO de cancelamento
+                    is_canc, chave_evt = detect_cancelamento_event_bytes(content)
+                    if is_canc:
+                        canceled_xmls.append({
+                            "base_name": base_name,
+                            "chave": chave_evt,
+                            "tipo": "evento_cancelamento"
+                        })
+                        # Não processa como NF
+                        continue
+
+                    # 2) Processa como NFCom normal
+                    logical_name = nome
                     er, det, corr_bytes, foi_corrigido, chave = process_single_xml_bytes(
                         content,
                         logical_name,
@@ -1180,7 +1247,8 @@ def main():
                     if cancel_keys and chave and chave in cancel_keys:
                         canceled_xmls.append({
                             "base_name": base_name,
-                            "chave": chave
+                            "chave": chave,
+                            "tipo": "lista_canceladas"
                         })
                         continue
 
@@ -1233,6 +1301,9 @@ def main():
         # Se não houver itens detalhados nem erros
         if not erros_total and not itens_detalhe:
             st.warning("Nenhum XML NFCom válido foi encontrado nos arquivos enviados (ativos).")
+            # Ainda assim pode haver apenas eventos de cancelamento
+            if canceled_xmls:
+                st.info("Foram encontrados apenas XMLs de eventos de cancelamento ou notas canceladas pela lista.")
             return
 
         # Monta DataFrames globais de itens
@@ -1310,7 +1381,7 @@ def main():
             rows_status.append({
                 "arquivo_base": cxml["base_name"],
                 "chave": cxml.get("chave", ""),
-                "status": "cancelado"
+                "status": cxml.get("tipo", "cancelado")
             })
         df_status_xml = pd.DataFrame(rows_status) if rows_status else pd.DataFrame()
 
@@ -1322,10 +1393,10 @@ def main():
         })
         resumo_rows.append({
             "Métrica": "XMLs ativos (mantidos)",
-            "Valor": len(xml_resultosos := xml_resultados)
+            "Valor": len(xml_resultados)
         })
         resumo_rows.append({
-            "Métrica": "XMLs cancelados (excluídos das validações/faturamento)",
+            "Métrica": "XMLs cancelados (eventos + lista)",
             "Valor": len(canceled_xmls)
         })
         resumo_rows.append({
@@ -1488,22 +1559,19 @@ def main():
             st.info("Nenhum item de faturamento encontrado nos XML válidos (ativos).")
 
         # ====================================================
-        # Resumo de cancelamentos (se fornecida lista)
+        # Resumo de cancelamentos (eventos + lista)
         # ====================================================
-        if cancel_keys:
+        if canceled_xmls:
             qtd_ativos = len(xml_resultados)
             qtd_cancelados = len(canceled_xmls)
 
             st.subheader("Resumo de cancelamentos aplicados")
             st.write(f"XML ATIVOS (mantidos em ZIP/relatórios): **{qtd_ativos}**")
-            st.write(f"XML CANCELADOS (excluídos de ZIP/relatórios): **{qtd_cancelados}**")
+            st.write(f"XML CANCELADOS (eventos ou listados): **{qtd_cancelados}**")
 
-            if canceled_xmls:
-                st.markdown("XML cancelados identificados:")
-                df_cancel = pd.DataFrame(canceled_xmls)
-                st.dataframe(df_cancel, use_container_width=True)
-            else:
-                st.info("Nenhuma NFCom dos arquivos enviados constava na relação de canceladas.")
+            st.markdown("XML cancelados identificados (eventos de cancelamento ou chaves em lista):")
+            df_cancel = pd.DataFrame(canceled_xmls)
+            st.dataframe(df_cancel, use_container_width=True)
 
             pdf_cancel = generate_pdf_cancelamento(qtd_ativos, qtd_cancelados)
             st.download_button(
