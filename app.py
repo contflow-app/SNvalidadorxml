@@ -1,19 +1,20 @@
 import io
-from typing import List, Dict, Any
+import re
+import zipfile
+from typing import List, Dict, Any, Tuple
 
 import streamlit as st
 import pandas as pd
 import yaml
 from lxml import etree
-import re
-import zipfile
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import simpleSplit
 
-# Caminho do logo da Contare no repositório
 LOGO_PATH = "Logo-Contare-ISP-1.png"
+
+st.set_page_config(page_title="Validador NFCom 62 - Contare", layout="wide")
 
 
 # ====================================================
@@ -21,19 +22,9 @@ LOGO_PATH = "Logo-Contare-ISP-1.png"
 # ====================================================
 
 def get_ns(tree: etree._ElementTree) -> Dict[str, str]:
-    """
-    Retorna o namespace padrão do NFCom mapeado como prefixo 'n'.
-    """
     root = tree.getroot()
     default_ns = root.nsmap.get(None)
     return {"n": default_ns} if default_ns else {}
-
-
-# ====================================================
-# Configuração
-# ====================================================
-
-st.set_page_config(page_title="Validador NFCom 62 - Contare", layout="wide")
 
 
 # ====================================================
@@ -74,15 +65,11 @@ def to_float(value: str) -> float:
 
 
 def num_to_br(value) -> str:
-    """
-    Converte número para string no formato brasileiro (1.234,56).
-    Se não for número, devolve como string.
-    """
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
     try:
         x = float(value)
-        s = f"{x:,.2f}"  # 1,234.56
+        s = f"{x:,.2f}"
         s = s.replace(",", "X").replace(".", ",").replace("X", ".")
         return s
     except Exception:
@@ -124,32 +111,12 @@ def normalize_text(s: str) -> str:
 
 
 def classify_item_scm_sva(xprod: str, cclass: str, cclass_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Classifica item como SCM ou SVA usando:
-      - descrição xProd (palavras-chave)
-      - cClass informado (listas config: scm_cclasses, sva_cclasses)
-
-    Regra conservadora:
-      - Só considera "sugestão forte" quando:
-        * descrição indica SCM e cClass indica SVA, ou
-        * descrição indica SVA e cClass indica SCM.
-      - Nos demais casos, ou mantém o cClass ou marca INDEFINIDO/descrição, mas sem força
-        para sugerir mudança.
-
-    Retorna dict com:
-      - class_por_descricao: "SCM" / "SVA" / "AMBIGUO" / "INDEFINIDO"
-      - class_por_cclass: "SCM" / "SVA" / "INDEFINIDO"
-      - class_final_sugerida: "SCM" / "SVA" / "INDEFINIDO"
-      - motivo: texto explicando lógica
-      - sugestao_forte: True/False
-    """
     desc_norm = normalize_text(xprod or "")
     cclass = (cclass or "").strip()
 
     sva_cclasses = set(cclass_cfg.get("sva_cclasses", []) or [])
     scm_cclasses = set(cclass_cfg.get("scm_cclasses", []) or [])
 
-    # 1) Classificação pela descrição
     desc_is_scm = any(k in desc_norm for k in SCM_KEYWORDS)
     desc_is_sva = any(k in desc_norm for k in SVA_KEYWORDS)
 
@@ -162,7 +129,6 @@ def classify_item_scm_sva(xprod: str, cclass: str, cclass_cfg: Dict[str, Any]) -
     else:
         class_desc = "INDEFINIDO"
 
-    # 2) Classificação pelo cClass
     if cclass in scm_cclasses:
         class_cclass = "SCM"
     elif cclass in sva_cclasses:
@@ -170,12 +136,10 @@ def classify_item_scm_sva(xprod: str, cclass: str, cclass_cfg: Dict[str, Any]) -
     else:
         class_cclass = "INDEFINIDO"
 
-    # 3) Classificação final super conservadora
     class_final = class_cclass
     motivo = []
     sugestao_forte = False
 
-    # Casos de sugestão forte: descrição e cClass em conflito direto
     if class_desc == "SCM" and class_cclass == "SVA":
         class_final = "SCM"
         sugestao_forte = True
@@ -185,12 +149,10 @@ def classify_item_scm_sva(xprod: str, cclass: str, cclass_cfg: Dict[str, Any]) -
         sugestao_forte = True
         motivo.append("Descrição contém palavras-chave de SVA; cClass está mapeado como SCM.")
     else:
-        # Sem conflito direto forte
         if class_cclass in ("SCM", "SVA"):
             class_final = class_cclass
             motivo.append(f"Classificação mantida pelo cClass ({class_cclass}), sem evidência forte de erro.")
         elif class_desc in ("SCM", "SVA"):
-            # Descrição sugere algo, mas sem cClass definido: ainda assim é fraco
             class_final = class_desc
             motivo.append(
                 f"Descrição sugere {class_desc}, porém sem mapeamento de cClass. "
@@ -240,14 +202,9 @@ def get_nf_model(tree: etree._ElementTree) -> str:
 
 
 def extract_chave_acesso(tree: etree._ElementTree) -> str:
-    """
-    Tenta extrair a chave de acesso (44 dígitos) da NFCom.
-    Primeiro busca em infNFCom/@Id; se não achar, procura 44 dígitos em todo o XML.
-    """
     root = tree.getroot()
     ns = get_ns(tree)
 
-    # Tenta caminho padrão NFCom
     if ns:
         ids = root.xpath(".//n:infNFCom/@Id", namespaces=ns)
     else:
@@ -258,20 +215,12 @@ def extract_chave_acesso(tree: etree._ElementTree) -> str:
     if m:
         return m.group(0)
 
-    # Fallback: busca 44 dígitos em todo o XML
     xml_str = etree.tostring(root, encoding="unicode")
     m2 = re.search(r"\d{44}", xml_str)
     return m2.group(0) if m2 else ""
 
 
-def detect_cancelamento_event_bytes(xml_bytes: bytes) -> (bool, str | None):
-    """
-    Detecta se o XML é um EVENTO de cancelamento de NF (NFCom ou NFe),
-    usando:
-      - tpEvento = 110111
-      - xEvento contendo 'cancelamento'
-    Retorna (is_cancel, chave_associada_ou_none)
-    """
+def detect_cancelamento_event_bytes(xml_bytes: bytes) -> Tuple[bool, str | None]:
     try:
         tree = parse_xml(xml_bytes)
     except Exception:
@@ -296,10 +245,9 @@ def detect_cancelamento_event_bytes(xml_bytes: bytes) -> (bool, str | None):
     if tp != "110111":
         return False, None
 
-    # Confirma que é de cancelamento
     if xevt_nodes:
         xevt_txt = normalize_text(xevt_nodes[0].text or "")
-        if "cancelamento" not in xevt_txt:
+        if "cancelamento" not in xevt_txt and "cancelado" not in xevt_txt:
             return False, None
 
     chave = (ch_nodes[0].text or "").strip() if ch_nodes else None
@@ -366,7 +314,6 @@ def validate_with_rules_yaml(tree, rules, file_name):
     root = tree.getroot()
     ns = get_ns(tree)
 
-    # Detectar CRT (Simples Nacional = 1; Normal = 3)
     if ns:
         crt_nodes = root.xpath(".//n:emit/n:CRT", namespaces=ns)
     else:
@@ -379,16 +326,11 @@ def validate_with_rules_yaml(tree, rules, file_name):
         xpath = rule.get("xpath", "")
         params = rule.get("parametros", {}) or {}
 
-        # Ignorar regras de PIS/COFINS por item para SN (CRT != 3)
         if rule_id in ("R_DET_PIS_VPIS_OBRIG", "R_DET_COFINS_VCOFINS_OBRIG") and crt != "3":
             continue
 
         if tipo == "condicional":
-            if ns:
-                base_nodes = root.xpath(xpath, namespaces=ns)
-            else:
-                base_nodes = root.xpath(xpath)
-
+            base_nodes = root.xpath(xpath, namespaces=ns) if ns else root.xpath(xpath)
             for node in base_nodes:
                 cond_xpath = params.get("condicao_xpath")
                 cond_vals = params.get("condicao_valores", [])
@@ -397,10 +339,7 @@ def validate_with_rules_yaml(tree, rules, file_name):
                 obrig = params.get("alvo_obrigatorio", True)
 
                 if cond_xpath:
-                    if ns:
-                        cond_nodes = node.xpath(cond_xpath, namespaces=ns)
-                    else:
-                        cond_nodes = node.xpath(cond_xpath)
+                    cond_nodes = node.xpath(cond_xpath, namespaces=ns) if ns else node.xpath(cond_xpath)
                     cond_text = (cond_nodes[0].text or "").strip() if cond_nodes else ""
                 else:
                     cond_text = ""
@@ -409,10 +348,7 @@ def validate_with_rules_yaml(tree, rules, file_name):
                     continue
 
                 if alvo_xpath:
-                    if ns:
-                        alvo_nodes = node.xpath(alvo_xpath, namespaces=ns)
-                    else:
-                        alvo_nodes = node.xpath(alvo_xpath)
+                    alvo_nodes = node.xpath(alvo_xpath, namespaces=ns) if ns else node.xpath(alvo_xpath)
                     alvo_text = (alvo_nodes[0].text or "").strip() if alvo_nodes else ""
                 else:
                     alvo_text = ""
@@ -438,7 +374,6 @@ def validate_with_rules_yaml(tree, rules, file_name):
                         "sugestao_correcao": rule.get("sugestao_correcao"),
                         "nivel": rule.get("nivel", "erro"),
                     })
-
         else:
             nodes = get_xpath_nodes(tree, xpath)
             if not nodes and tipo == "obrigatorio":
@@ -488,15 +423,10 @@ def is_dest_pf_or_pj_nao_contrib(tree):
         return True
     if cnpj and ind == "9":
         return True
-
     return False
 
 
 def validate_cfop_pf_pj_nao_contrib(tree, file_name, cclass_cfg):
-    """
-    Continua apenas gerando erro quando CFOP incompatível com PF/PJ não contribuinte
-    (não corrige aqui – a correção automática é feita em generate_corrected_xml).
-    """
     erros = []
     if not is_dest_pf_or_pj_nao_contrib(tree):
         return erros
@@ -517,10 +447,7 @@ def validate_cfop_pf_pj_nao_contrib(tree, file_name, cclass_cfg):
     uf_emit = (uf_e[0].text or "").strip() if uf_e else ""
     uf_dest = (uf_d[0].text or "").strip() if uf_d else ""
 
-    if uf_emit == uf_dest:
-        cfops_ok = ["5307"]
-    else:
-        cfops_ok = ["6307"]
+    cfops_ok = ["5307"] if uf_emit == uf_dest and uf_emit and uf_dest else ["6307"]
 
     for det in dets:
         if ns:
@@ -552,10 +479,6 @@ def validate_cfop_pf_pj_nao_contrib(tree, file_name, cclass_cfg):
 
 
 def validate_sva_cfop_zero(tree, file_name, cclass_cfg):
-    """
-    Regras de SVA com CFOP – agora apenas como apoio (a lógica final de remoção
-    será feita em generate_corrected_xml, considerando classificação inteligente).
-    """
     erros = []
     sva = cclass_cfg.get("sva_cclasses", [])
     root = tree.getroot()
@@ -576,7 +499,6 @@ def validate_sva_cfop_zero(tree, file_name, cclass_cfg):
 
         if cclass not in sva:
             continue
-
         if not cfop:
             continue
 
@@ -601,17 +523,10 @@ def validate_custom_rules(tree, file_name, cclass_cfg):
 
 
 # ====================================================
-# Extração DETALHADA de itens (faturamento + conferência)
+# Extração DETALHADA de itens
 # ====================================================
 
 def extract_item_details(tree, file_name, cclass_cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Extrai dados detalhados por item:
-      - Identificação: arquivo, cClass, xProd, CFOP, qFaturada, uMed
-      - Valores: vItem, vProd, vDesc, vOutros, vServ
-      - Impostos: vBCICMS, pICMS, vICMS, pPIS, vPIS, pCOFINS, vCOFINS
-      - Classificação inteligente SCM/SVA (não altera XML).
-    """
     itens = []
     ns = get_ns(tree)
     root = tree.getroot()
@@ -692,7 +607,7 @@ def extract_item_details(tree, file_name, cclass_cfg: Dict[str, Any]) -> List[Di
         pcof = to_float(pcof_text)
         vcof = to_float(vcof_text)
 
-        vserv = vprod  # NFCom, consideramos vProd como valor de serviço
+        vserv = vprod
 
         class_info = classify_item_scm_sva(xprod, cclass, cclass_cfg)
 
@@ -726,8 +641,7 @@ def extract_item_details(tree, file_name, cclass_cfg: Dict[str, Any]) -> List[Di
 
 
 # ====================================================
-# Correção dos XMLs (CFOP de SVA + Paliativo vProd = vItem)
-# com classificação inteligente SCM/SVA opcional
+# Correção dos XMLs
 # ====================================================
 
 def generate_corrected_xml(tree, cclass_cfg, corrigir_descontos: bool, usar_class_inteligente: bool):
@@ -738,7 +652,6 @@ def generate_corrected_xml(tree, cclass_cfg, corrigir_descontos: bool, usar_clas
     sva_cclasses = set(cclass_cfg.get("sva_cclasses", []) or [])
     scm_cclasses = set(cclass_cfg.get("scm_cclasses", []) or [])
 
-    # Info para CFOP automático PF/PJ não contrib.
     ns_orig = get_ns(tree)
     orig_root = tree.getroot()
     if ns_orig:
@@ -762,7 +675,6 @@ def generate_corrected_xml(tree, cclass_cfg, corrigir_descontos: bool, usar_clas
     dets = copy_root.xpath(".//n:det", namespaces=ns) if ns else copy_root.xpath(".//det")
 
     for det in dets:
-        # Leitura de campos
         if ns:
             cclass_nodes = det.xpath("./n:prod/n:cClass", namespaces=ns)
             cfop_nodes = det.xpath("./n:prod/n:CFOP", namespaces=ns)
@@ -780,13 +692,11 @@ def generate_corrected_xml(tree, cclass_cfg, corrigir_descontos: bool, usar_clas
         xprod_text = (xprod_nodes[0].text or "").strip() if xprod_nodes else ""
         cfop_text = (cfop_nodes[0].text or "").strip() if cfop_nodes else ""
 
-        # Classificação "forte" ou fallback por cClass
         if usar_class_inteligente:
             class_info = classify_item_scm_sva(xprod_text, cclass_text, cclass_cfg)
             if class_info["sugestao_forte"]:
                 class_final = class_info["class_final_sugerida"]
             else:
-                # Sem sugestão forte → volta para cClass
                 if cclass_text in sva_cclasses:
                     class_final = "SVA"
                 elif cclass_text in scm_cclasses:
@@ -794,7 +704,6 @@ def generate_corrected_xml(tree, cclass_cfg, corrigir_descontos: bool, usar_clas
                 else:
                     class_final = "INDEFINIDO"
         else:
-            # Não usar classificação inteligente, apenas cClass
             if cclass_text in sva_cclasses:
                 class_final = "SVA"
             elif cclass_text in scm_cclasses:
@@ -802,7 +711,7 @@ def generate_corrected_xml(tree, cclass_cfg, corrigir_descontos: bool, usar_clas
             else:
                 class_final = "INDEFINIDO"
 
-        # 1) Remoção de CFOP de SVA (apenas se class_final SVA)
+        # 1) Remoção de CFOP de SVA
         if class_final == "SVA" and cfop_nodes:
             for node in cfop_nodes:
                 parent = node.getparent()
@@ -811,16 +720,11 @@ def generate_corrected_xml(tree, cclass_cfg, corrigir_descontos: bool, usar_clas
             cfop_nodes = []
             cfop_text = ""
 
-        # 2) Ajuste de CFOP para SCM PF/PJ não contribuinte (5307/6307)
+        # 2) Ajuste de CFOP para SCM PF/PJ não contribuinte
         if class_final == "SCM" and dest_pf_nao_contrib and cfop_expected_pf:
             if not cfop_text or cfop_text != cfop_expected_pf:
-                # Criar ou ajustar nós CFOP
                 if not cfop_nodes:
-                    # criar nodo CFOP
-                    if ns:
-                        prod_nodes = det.xpath("./n:prod", namespaces=ns)
-                    else:
-                        prod_nodes = det.xpath("./prod")
+                    prod_nodes = det.xpath("./n:prod", namespaces=ns) if ns else det.xpath("./prod")
                     if prod_nodes:
                         prod_node = prod_nodes[0]
                         if ns and "n" in ns:
@@ -831,7 +735,7 @@ def generate_corrected_xml(tree, cclass_cfg, corrigir_descontos: bool, usar_clas
                 else:
                     cfop_nodes[0].text = cfop_expected_pf
 
-        # 3) Correção vProd = vItem se desconto
+        # 3) Paliativo desconto vProd=vItem
         if corrigir_descontos:
             if vitem_nodes and vprod_nodes:
                 vi_text = (vitem_nodes[0].text or "").strip()
@@ -855,7 +759,6 @@ def generate_pdf(df: pd.DataFrame, logo_path: str = LOGO_PATH):
     x = 40
     y = h - 60
 
-    # Logo
     try:
         c.drawImage(logo_path, x, h - 100, width=90, preserveAspectRatio=True, mask='auto')
         c.setFont("Helvetica-Bold", 14)
@@ -898,12 +801,8 @@ def generate_pdf(df: pd.DataFrame, logo_path: str = LOGO_PATH):
 
     c.save()
     buffer.seek(0)
-    return buffer
+    return buffer.getvalue()  # <-- bytes, evita objeto "consumível"
 
-
-# ====================================================
-# PDF – Resumo de cancelamentos
-# ====================================================
 
 def generate_pdf_cancelamento(qtd_ativos: int, qtd_cancelados: int, logo_path: str = LOGO_PATH):
     buffer = io.BytesIO()
@@ -912,7 +811,6 @@ def generate_pdf_cancelamento(qtd_ativos: int, qtd_cancelados: int, logo_path: s
     x = 40
     y = h - 60
 
-    # Cabeçalho com logo
     try:
         c.drawImage(logo_path, x, h - 100, width=90, preserveAspectRatio=True, mask='auto')
         c.setFont("Helvetica-Bold", 16)
@@ -947,11 +845,11 @@ def generate_pdf_cancelamento(qtd_ativos: int, qtd_cancelados: int, logo_path: s
 
     c.save()
     buffer.seek(0)
-    return buffer
+    return buffer.getvalue()
 
 
 # ====================================================
-# Excel (XLSX) – múltiplas abas
+# Excel – múltiplas abas
 # ====================================================
 
 def generate_excel_report(
@@ -963,22 +861,9 @@ def generate_excel_report(
     df_status_xml: pd.DataFrame | None,
     df_resumo: pd.DataFrame | None,
     df_class_sug: pd.DataFrame | None,
-) -> io.BytesIO:
-    """
-    Gera um arquivo Excel com múltiplas abas:
-      - Resumo
-      - Erros detalhados
-      - Erros consolidados
-      - Faturamento por item
-      - Faturamento por CClass
-      - Detalhamento de itens
-      - Propostas SCM/SVA
-      - Status XMLs
-    Com números formatados em estilo BR nas abas de faturamento/detalhamento.
-    """
+) -> bytes:
     output = io.BytesIO()
 
-    # Prepara cópias para formatação BR
     def format_br_cols(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
         if df is None or df.empty:
             return df
@@ -990,6 +875,7 @@ def generate_excel_report(
 
     df_item_cclass_br = format_br_cols(df_item_cclass, ["total_vServ"])
     df_cclass_br = format_br_cols(df_cclass, ["total_vServ", "participacao_%"])
+
     if df_detalhe is not None and not df_detalhe.empty:
         numeric_cols = [
             "vItem", "vProd", "vDesc", "vOutros", "vServ",
@@ -1002,30 +888,23 @@ def generate_excel_report(
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         if df_resumo is not None and not df_resumo.empty:
             df_resumo.to_excel(writer, sheet_name="Resumo", index=False)
-
         if df_erros is not None and not df_erros.empty:
             df_erros.to_excel(writer, sheet_name="Erros Detalhados", index=False)
-
         if df_consolidado is not None and not df_consolidado.empty:
             df_consolidado.to_excel(writer, sheet_name="Erros Consolidados", index=False)
-
         if df_item_cclass_br is not None and not df_item_cclass_br.empty:
             df_item_cclass_br.to_excel(writer, sheet_name="Faturamento Item", index=False)
-
         if df_cclass_br is not None and not df_cclass_br.empty:
             df_cclass_br.to_excel(writer, sheet_name="Faturamento CClass", index=False)
-
         if df_detalhe_br is not None and not df_detalhe_br.empty:
             df_detalhe_br.to_excel(writer, sheet_name="Detalhamento Itens", index=False)
-
         if df_class_sug is not None and not df_class_sug.empty:
             df_class_sug.to_excel(writer, sheet_name="SCM_SVA_Sugerido", index=False)
-
         if df_status_xml is not None and not df_status_xml.empty:
             df_status_xml.to_excel(writer, sheet_name="Status XMLs", index=False)
 
     output.seek(0)
-    return output
+    return output.getvalue()
 
 
 # ====================================================
@@ -1040,14 +919,6 @@ def process_single_xml_bytes(
     corrigir_descontos: bool,
     usar_class_inteligente: bool,
 ):
-    """
-    Processa um único XML (em bytes) e retorna:
-    - lista de erros
-    - lista de itens detalhados para faturamento/conferência
-    - bytes do XML corrigido
-    - flag se foi de fato corrigido (True/False)
-    - chave de acesso (44 dígitos), se encontrada
-    """
     erros_total = []
 
     tree = parse_xml(xml_bytes)
@@ -1055,19 +926,13 @@ def process_single_xml_bytes(
     if modelo and modelo != "62":
         raise ValueError(f"Modelo {modelo} diferente de 62 (NFCom).")
 
-    # Serialização "normalizada" do original para comparação
     original_bytes = etree.tostring(tree, encoding="utf-8", xml_declaration=True)
-
-    # Extrai chave de acesso
     chave = extract_chave_acesso(tree)
 
-    # Regras YAML
     erros_total.extend(validate_with_rules_yaml(tree, rules, logical_name))
-    # Regras customizadas
     erros_total.extend(validate_custom_rules(tree, logical_name, cclass_cfg))
-    # Itens detalhados + classificação inteligente
     itens_detalhe = extract_item_details(tree, logical_name, cclass_cfg)
-    # XML corrigido (aplicando ou não classificação inteligente)
+
     corrigido_bytes = generate_corrected_xml(
         tree,
         cclass_cfg,
@@ -1075,25 +940,253 @@ def process_single_xml_bytes(
         usar_class_inteligente=usar_class_inteligente
     )
 
-    # Verifica se de fato houve alteração estrutural
     foi_corrigido = corrigido_bytes != original_bytes
-
     return erros_total, itens_detalhe, corrigido_bytes, foi_corrigido, chave
 
 
 # ====================================================
-# Interface Streamlit
+# Estado (para não “sumir” ao baixar)
+# ====================================================
+
+def init_state():
+    st.session_state.setdefault("has_results", False)
+    st.session_state.setdefault("results", {})
+    st.session_state.setdefault("downloads", {})  # cache de bytes prontos (zip/pdf/excel)
+
+
+def clear_results():
+    st.session_state["has_results"] = False
+    st.session_state["results"] = {}
+    st.session_state["downloads"] = {}
+
+
+# ====================================================
+# Processa lote e salva no session_state
+# ====================================================
+
+def run_processing(uploaded_files, cancel_keys, rules, cclass_cfg, consolidar, corrigir_descontos, usar_class_inteligente):
+    erros_total: List[Dict[str, Any]] = []
+    erros_invalidos: List[Dict[str, Any]] = []
+    itens_detalhe: List[Dict[str, Any]] = []
+    xml_resultados: List[Dict[str, Any]] = []
+    canceled_xmls: List[Dict[str, Any]] = []
+
+    for f in uploaded_files:
+        nome = f.name
+        try:
+            content = f.read()
+
+            if nome.lower().endswith(".zip"):
+                try:
+                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                        for info in zf.infolist():
+                            if not info.filename.lower().endswith(".xml"):
+                                continue
+
+                            base_name = info.filename.replace("\\", "/").replace("/", "_")
+                            try:
+                                xml_bytes = zf.read(info)
+
+                                is_canc, chave_evt = detect_cancelamento_event_bytes(xml_bytes)
+                                if is_canc:
+                                    canceled_xmls.append({"base_name": base_name, "chave": chave_evt, "tipo": "evento_cancelamento"})
+                                    continue
+
+                                logical_name = f"{nome}::{info.filename}"
+                                er, det, corr_bytes, foi_corrigido, chave = process_single_xml_bytes(
+                                    xml_bytes,
+                                    logical_name,
+                                    rules,
+                                    cclass_cfg,
+                                    corrigir_descontos,
+                                    usar_class_inteligente,
+                                )
+
+                                if cancel_keys and chave and chave in cancel_keys:
+                                    canceled_xmls.append({"base_name": base_name, "chave": chave, "tipo": "lista_canceladas"})
+                                    continue
+
+                                erros_total.extend(er)
+                                itens_detalhe.extend(det)
+                                xml_resultados.append({
+                                    "base_name": base_name,
+                                    "conteudo": corr_bytes,
+                                    "corrigido": foi_corrigido,
+                                    "chave": chave
+                                })
+                            except ValueError as e_xml:
+                                erros_invalidos.append({"arquivo": f"{nome}::{info.filename}", "erro": str(e_xml)})
+                except zipfile.BadZipFile:
+                    erros_invalidos.append({"arquivo": nome, "erro": "Arquivo ZIP inválido ou corrompido."})
+
+            else:
+                base_name = nome
+
+                is_canc, chave_evt = detect_cancelamento_event_bytes(content)
+                if is_canc:
+                    canceled_xmls.append({"base_name": base_name, "chave": chave_evt, "tipo": "evento_cancelamento"})
+                    continue
+
+                logical_name = nome
+                er, det, corr_bytes, foi_corrigido, chave = process_single_xml_bytes(
+                    content,
+                    logical_name,
+                    rules,
+                    cclass_cfg,
+                    corrigir_descontos,
+                    usar_class_inteligente,
+                )
+
+                if cancel_keys and chave and chave in cancel_keys:
+                    canceled_xmls.append({"base_name": base_name, "chave": chave, "tipo": "lista_canceladas"})
+                    continue
+
+                erros_total.extend(er)
+                itens_detalhe.extend(det)
+                xml_resultados.append({
+                    "base_name": base_name,
+                    "conteudo": corr_bytes,
+                    "corrigido": foi_corrigido,
+                    "chave": chave
+                })
+
+        except ValueError as e:
+            erros_invalidos.append({"arquivo": nome, "erro": str(e)})
+
+    df_itens = pd.DataFrame(itens_detalhe) if itens_detalhe else pd.DataFrame()
+    df_erros = pd.DataFrame(erros_total) if erros_total else pd.DataFrame()
+
+    # Propostas
+    if not df_itens.empty:
+        divergentes = df_itens[
+            (df_itens["sugestao_forte"] == True) &
+            (df_itens["class_final_sugerida"] != df_itens["class_cclass"])
+        ].copy()
+    else:
+        divergentes = pd.DataFrame()
+
+    # Faturamento
+    if not df_itens.empty:
+        df_item_cclass = (
+            df_itens.groupby(["cClass", "descricao"])
+            .agg(qtd_itens=("arquivo", "count"), total_vServ=("vServ", "sum"))
+            .reset_index()
+        )
+
+        df_cclass = (
+            df_itens.groupby("cClass")
+            .agg(qtd_itens=("arquivo", "count"), total_vServ=("vServ", "sum"))
+            .reset_index()
+        )
+
+        total_geral_vserv = df_cclass["total_vServ"].sum()
+        if total_geral_vserv > 0:
+            df_cclass["participacao_%"] = (df_cclass["total_vServ"] / total_geral_vserv) * 100
+    else:
+        df_item_cclass = pd.DataFrame()
+        df_cclass = pd.DataFrame()
+        total_geral_vserv = 0.0
+
+    # Status xmls
+    rows_status = []
+    for x in xml_resultados:
+        status = "corrigido" if x["corrigido"] else "sem_correcao"
+        rows_status.append({"arquivo_base": x["base_name"], "chave": x.get("chave", ""), "status": status})
+    for cxml in canceled_xmls:
+        rows_status.append({
+            "arquivo_base": cxml["base_name"],
+            "chave": cxml.get("chave", ""),
+            "status": cxml.get("tipo", "cancelado")
+        })
+    df_status_xml = pd.DataFrame(rows_status) if rows_status else pd.DataFrame()
+
+    # Resumo
+    df_resumo = pd.DataFrame([
+        {"Métrica": "XMLs válidos processados (ativos + cancelados)", "Valor": len(xml_resultados) + len(canceled_xmls)},
+        {"Métrica": "XMLs ativos (mantidos)", "Valor": len(xml_resultados)},
+        {"Métrica": "XMLs cancelados (eventos + lista)", "Valor": len(canceled_xmls)},
+        {"Métrica": "Total de erros/alertas encontrados (apenas ativos)", "Valor": len(df_erros)},
+        {"Métrica": "Total de itens de faturamento (apenas ativos)", "Valor": len(df_itens)},
+        {"Métrica": "Total faturado (vServ, apenas ativos)", "Valor": num_to_br(total_geral_vserv)},
+    ])
+
+    # Consolidado erros
+    df_consolidado = None
+    if not df_erros.empty and consolidar:
+        df_consolidado = (
+            df_erros
+            .groupby(["regra_id", "descricao_regra", "mensagem_erro", "sugestao_correcao"])
+            .agg(qtd=("arquivo", "count"), arquivos=("arquivo", lambda x: ", ".join(sorted(set(x)))))
+            .reset_index()
+        )
+
+    # ZIP ativos (corrigidos + sem correção) — gera UMA vez e guarda bytes
+    zip_bytes = b""
+    if xml_resultados:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for x in xml_resultados:
+                base = x["base_name"]
+                base_sem_ext = base[:-4] if base.lower().endswith(".xml") else base
+                out_name = f"{base_sem_ext}_corrigido.xml" if x["corrigido"] else f"{base_sem_ext}_sem_correcao.xml"
+                z.writestr(out_name, x["conteudo"])
+        buf.seek(0)
+        zip_bytes = buf.getvalue()
+
+    # PDFs/Excel — gera UMA vez e guarda bytes
+    pdf_erros_bytes = b""
+    if not df_erros.empty:
+        pdf_erros_bytes = generate_pdf(df_erros)
+
+    pdf_cancel_bytes = b""
+    if canceled_xmls:
+        pdf_cancel_bytes = generate_pdf_cancelamento(len(xml_resultados), len(canceled_xmls))
+
+    excel_bytes = generate_excel_report(
+        df_erros=df_erros if not df_erros.empty else None,
+        df_consolidado=df_consolidado,
+        df_item_cclass=df_item_cclass if not df_item_cclass.empty else None,
+        df_cclass=df_cclass if not df_cclass.empty else None,
+        df_detalhe=df_itens if not df_itens.empty else None,
+        df_status_xml=df_status_xml if not df_status_xml.empty else None,
+        df_resumo=df_resumo if not df_resumo.empty else None,
+        df_class_sug=divergentes if not divergentes.empty else None,
+    )
+
+    return {
+        "erros_invalidos": erros_invalidos,
+        "xml_resultados": xml_resultados,
+        "canceled_xmls": canceled_xmls,
+        "df_itens": df_itens,
+        "df_erros": df_erros,
+        "df_consolidado": df_consolidado,
+        "df_item_cclass": df_item_cclass,
+        "df_cclass": df_cclass,
+        "df_status_xml": df_status_xml,
+        "df_resumo": df_resumo,
+        "divergentes": divergentes,
+        "downloads": {
+            "zip_ativos": zip_bytes,
+            "pdf_erros": pdf_erros_bytes,
+            "pdf_cancel": pdf_cancel_bytes,
+            "excel": excel_bytes,
+        }
+    }
+
+
+# ====================================================
+# UI
 # ====================================================
 
 def main():
-    col1, col2 = st.columns([1, 3])
+    init_state()
 
+    col1, col2 = st.columns([1, 3])
     with col1:
         try:
             st.image(LOGO_PATH)
         except Exception:
             st.write("")
-
     with col2:
         st.markdown(
             "<h2>Validador NFCom Modelo 62</h2>"
@@ -1107,12 +1200,8 @@ def main():
     cclass_cfg = load_cclass_config()
 
     st.sidebar.header("Opções")
-
     consolidar = st.sidebar.checkbox("Consolidar erros iguais", value=True)
-    corrigir_descontos = st.sidebar.checkbox(
-        "Corrigir descontos (vProd = vItem quando vProd < vItem)",
-        value=False
-    )
+    corrigir_descontos = st.sidebar.checkbox("Corrigir descontos (vProd = vItem quando vProd < vItem)", value=False)
     usar_class_inteligente = st.sidebar.checkbox(
         "Aplicar classificação inteligente SCM/SVA nas correções (usar descrição do item)",
         value=False,
@@ -1136,472 +1225,233 @@ def main():
             text = raw.decode("utf-8", errors="ignore")
         except Exception:
             text = raw.decode("latin1", errors="ignore")
-        # Captura todos os blocos de 44 dígitos como chaves de acesso
         cancel_keys = set(re.findall(r"\d{44}", text))
 
-    uploaded = st.file_uploader(
-        "Selecione arquivos XML ou ZIP contendo XMLs",
-        type=["xml", "zip"],
-        accept_multiple_files=True
-    )
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Limpar resultados (reset)", type="secondary"):
+        clear_results()
+        st.rerun()
 
-    if uploaded and st.button("Validar arquivos"):
-        erros_total: List[Dict[str, Any]] = []
-        erros_invalidos: List[Dict[str, Any]] = []
-        itens_detalhe: List[Dict[str, Any]] = []
-        xml_resultados: List[Dict[str, Any]] = []   # XMLs ATIVOS (vão para ZIP/relatórios)
-        canceled_xmls: List[Dict[str, Any]] = []    # XMLs CANCELADOS (eventos + chaves manuais)
+    # Upload + botão dentro de form: evita reruns “parciais”
+    with st.form("form_upload"):
+        uploaded = st.file_uploader(
+            "Selecione arquivos XML ou ZIP contendo XMLs",
+            type=["xml", "zip"],
+            accept_multiple_files=True
+        )
+        submitted = st.form_submit_button("Validar arquivos", type="primary")
 
-        for f in uploaded:
-            nome = f.name
-            try:
-                content = f.read()
-
-                # Se for ZIP, processa XMLs internos
-                if nome.lower().endswith(".zip"):
-                    try:
-                        with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                            for info in zf.infolist():
-                                if info.filename.lower().endswith(".xml"):
-                                    base_name = info.filename.replace("\\", "/").replace("/", "_")
-                                    try:
-                                        xml_bytes = zf.read(info)
-
-                                        # 1) Detecta se é EVENTO de cancelamento
-                                        is_canc, chave_evt = detect_cancelamento_event_bytes(xml_bytes)
-                                        if is_canc:
-                                            canceled_xmls.append({
-                                                "base_name": base_name,
-                                                "chave": chave_evt,
-                                                "tipo": "evento_cancelamento"
-                                            })
-                                            # Não processa como NF
-                                            continue
-
-                                        # 2) Processa como NFCom normal
-                                        logical_name = f"{nome}::{info.filename}"
-
-                                        er, det, corr_bytes, foi_corrigido, chave = process_single_xml_bytes(
-                                            xml_bytes,
-                                            logical_name,
-                                            rules,
-                                            cclass_cfg,
-                                            corrigir_descontos,
-                                            usar_class_inteligente,
-                                        )
-
-                                        # Se houver relação de canceladas manual e a chave estiver nela → filtra
-                                        if cancel_keys and chave and chave in cancel_keys:
-                                            canceled_xmls.append({
-                                                "base_name": base_name,
-                                                "chave": chave,
-                                                "tipo": "lista_canceladas"
-                                            })
-                                            continue
-
-                                        erros_total.extend(er)
-                                        itens_detalhe.extend(det)
-
-                                        xml_resultados.append({
-                                            "base_name": base_name,
-                                            "conteudo": corr_bytes,
-                                            "corrigido": foi_corrigido,
-                                            "chave": chave
-                                        })
-                                    except ValueError as e_xml:
-                                        erros_invalidos.append({
-                                            "arquivo": f"{nome}::{info.filename}",
-                                            "erro": str(e_xml)
-                                        })
-                    except zipfile.BadZipFile:
-                        erros_invalidos.append({
-                            "arquivo": nome,
-                            "erro": "Arquivo ZIP inválido ou corrompido."
-                        })
-                else:
-                    # XML individual
-                    base_name = nome
-
-                    # 1) Detecta se é EVENTO de cancelamento
-                    is_canc, chave_evt = detect_cancelamento_event_bytes(content)
-                    if is_canc:
-                        canceled_xmls.append({
-                            "base_name": base_name,
-                            "chave": chave_evt,
-                            "tipo": "evento_cancelamento"
-                        })
-                        # Não processa como NF
-                        continue
-
-                    # 2) Processa como NFCom normal
-                    logical_name = nome
-                    er, det, corr_bytes, foi_corrigido, chave = process_single_xml_bytes(
-                        content,
-                        logical_name,
-                        rules,
-                        cclass_cfg,
-                        corrigir_descontos,
-                        usar_class_inteligente,
-                    )
-
-                    if cancel_keys and chave and chave in cancel_keys:
-                        canceled_xmls.append({
-                            "base_name": base_name,
-                            "chave": chave,
-                            "tipo": "lista_canceladas"
-                        })
-                        continue
-
-                    erros_total.extend(er)
-                    itens_detalhe.extend(det)
-                    xml_resultados.append({
-                        "base_name": base_name,
-                        "conteudo": corr_bytes,
-                        "corrigido": foi_corrigido,
-                        "chave": chave
-                    })
-
-            except ValueError as e:
-                erros_invalidos.append({
-                    "arquivo": nome,
-                    "erro": str(e)
-                })
-
-        # Arquivos inválidos
-        if erros_invalidos:
-            st.subheader("Arquivos não processados (inválidos ou modelo diferente de 62)")
-            st.dataframe(pd.DataFrame(erros_invalidos), use_container_width=True)
-
-        # ZIP com TODOS os XMLs válidos ATIVOS (corrigidos e sem correção)
-        if xml_resultados:
-            buf = io.BytesIO()
-            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-                for x in xml_resultados:
-                    base = x["base_name"]
-                    if base.lower().endswith(".xml"):
-                        base_sem_ext = base[:-4]
-                    else:
-                        base_sem_ext = base
-
-                    if x["corrigido"]:
-                        out_name = f"{base_sem_ext}_corrigido.xml"
-                    else:
-                        out_name = f"{base_sem_ext}_sem_correcao.xml"
-
-                    z.writestr(out_name, x["conteudo"])
-            buf.seek(0)
-            st.download_button(
-                "Baixar XMLs (corrigidos e sem correção) – apenas ATIVOS",
-                data=buf,
-                file_name="xml_nfcom_ativos_processados.zip",
-                mime="application/zip",
-                key="download_zip_xmls"
-            )
-
-        # Se não houver itens detalhados nem erros
-        if not erros_total and not itens_detalhe:
-            st.warning("Nenhum XML NFCom válido foi encontrado nos arquivos enviados (ativos).")
-            # Ainda assim pode haver apenas eventos de cancelamento
-            if canceled_xmls:
-                st.info("Foram encontrados apenas XMLs de eventos de cancelamento ou notas canceladas pela lista.")
-            return
-
-        # Monta DataFrames globais de itens
-        df_itens = pd.DataFrame(itens_detalhe) if itens_detalhe else pd.DataFrame()
-
-        # Propostas de reclassificação SCM/SVA (para revisão, apenas sugestões fortes)
-        if not df_itens.empty:
-            df_class_sug = df_itens.copy()
-            divergentes = df_class_sug[
-                (df_class_sug["sugestao_forte"] == True)
-                & (df_class_sug["class_final_sugerida"] != df_class_sug["class_cclass"])
-            ]
+    if submitted:
+        if not uploaded:
+            st.warning("Selecione ao menos 1 arquivo.")
         else:
-            df_class_sug = pd.DataFrame()
-            divergentes = pd.DataFrame()
-
-        if not divergentes.empty:
-            st.subheader("Propostas de classificação SCM/SVA (sugestões fortes)")
-            st.info(
-                "A tabela abaixo mostra apenas casos em que a descrição tem palavras-chave claras "
-                "e está em conflito direto com o cClass (alta probabilidade de erro de classificação)."
-            )
-            st.dataframe(
-                divergentes[
-                    [
-                        "arquivo", "descricao", "cClass", "CFOP",
-                        "class_cclass", "class_final_sugerida", "motivo_classificacao"
-                    ]
-                ],
-                use_container_width=True
-            )
-        else:
-            st.info(
-                "Nenhuma sugestão forte de reclassificação SCM/SVA foi identificada "
-                "(ou nenhum item processado)."
-            )
-
-        if not df_itens.empty:
-            # Totais por item (cClass + descrição)
-            df_item_cclass = (
-                df_itens
-                .groupby(["cClass", "descricao"])
-                .agg(
-                    qtd_itens=("arquivo", "count"),
-                    total_vServ=("vServ", "sum")
+            with st.spinner("Processando arquivos..."):
+                payload = run_processing(
+                    uploaded_files=uploaded,
+                    cancel_keys=cancel_keys,
+                    rules=rules,
+                    cclass_cfg=cclass_cfg,
+                    consolidar=consolidar,
+                    corrigir_descontos=corrigir_descontos,
+                    usar_class_inteligente=usar_class_inteligente,
                 )
-                .reset_index()
-            )
+            st.session_state["results"] = payload
+            st.session_state["downloads"] = payload["downloads"]
+            st.session_state["has_results"] = True
+            st.success("Processamento concluído.")
+            st.rerun()
 
-            # Totais por CClass
-            df_cclass = (
-                df_itens
-                .groupby("cClass")
-                .agg(
-                    qtd_itens=("arquivo", "count"),
-                    total_vServ=("vServ", "sum")
-                )
-                .reset_index()
-            )
-            total_geral_vserv = df_cclass["total_vServ"].sum()
-            if total_geral_vserv > 0:
-                df_cclass["participacao_%"] = (df_cclass["total_vServ"] / total_geral_vserv) * 100
-        else:
-            df_item_cclass = pd.DataFrame()
-            df_cclass = pd.DataFrame()
-            total_geral_vserv = 0.0
+    # Render sempre (se existir resultado)
+    if not st.session_state["has_results"]:
+        st.info("Envie arquivos e clique em **Validar arquivos**. Depois disso, você pode baixar relatórios sem perder a tela.")
+        st.markdown(
+            "<hr><p style='text-align:center;font-size:12px;'>"
+            "Desenvolvido por Raul Martins – Contare Contabilidade especializada em Provedores de Internet"
+            "</p>",
+            unsafe_allow_html=True
+        )
+        return
 
-        # df_status_xml (inclui ativos e cancelados)
-        rows_status = []
-        for x in xml_resultados:
-            base = x["base_name"]
-            status = "corrigido" if x["corrigido"] else "sem_correcao"
-            rows_status.append({"arquivo_base": base, "chave": x.get("chave", ""), "status": status})
-        for cxml in canceled_xmls:
-            rows_status.append({
-                "arquivo_base": cxml["base_name"],
-                "chave": cxml.get("chave", ""),
-                "status": cxml.get("tipo", "cancelado")
-            })
-        df_status_xml = pd.DataFrame(rows_status) if rows_status else pd.DataFrame()
+    r = st.session_state["results"]
+    dls = st.session_state["downloads"]
 
-        # Resumo
-        resumo_rows = []
-        resumo_rows.append({
-            "Métrica": "XMLs válidos processados (ativos + cancelados)",
-            "Valor": len(xml_resultados) + len(canceled_xmls)
-        })
-        resumo_rows.append({
-            "Métrica": "XMLs ativos (mantidos)",
-            "Valor": len(xml_resultados)
-        })
-        resumo_rows.append({
-            "Métrica": "XMLs cancelados (eventos + lista)",
-            "Valor": len(canceled_xmls)
-        })
-        resumo_rows.append({
-            "Métrica": "Total de erros/alertas encontrados (apenas ativos)",
-            "Valor": len(erros_total)
-        })
-        resumo_rows.append({
-            "Métrica": "Total de itens de faturamento (apenas ativos)",
-            "Valor": len(df_itens)
-        })
-        resumo_rows.append({
-            "Métrica": "Total faturado (vServ, apenas ativos)",
-            "Valor": num_to_br(total_geral_vserv)
-        })
-        df_resumo = pd.DataFrame(resumo_rows)
+    # inválidos
+    if r["erros_invalidos"]:
+        st.subheader("Arquivos não processados (inválidos ou modelo diferente de 62)")
+        st.dataframe(pd.DataFrame(r["erros_invalidos"]), use_container_width=True)
 
-        # ====================================================
-        # Quando houver erros → abas completas
-        # ====================================================
-        if erros_total:
-            df_erros = pd.DataFrame(erros_total)
-
-            if consolidar:
-                df_consolidado = (
-                    df_erros
-                    .groupby(["regra_id", "descricao_regra", "mensagem_erro", "sugestao_correcao"])
-                    .agg(
-                        qtd=("arquivo", "count"),
-                        arquivos=("arquivo", lambda x: ", ".join(sorted(set(x))))
-                    )
-                    .reset_index()
-                )
-            else:
-                df_consolidado = None
-
-            tab1, tab2, tab3, tab4 = st.tabs([
-                "Erros Detalhados",
-                "Erros Consolidados",
-                "Faturamento por CClass",
-                "Dashboard"
-            ])
-
-            # --------- Tab 1: Erros Detalhados ---------
-            with tab1:
-                st.subheader("Erros por arquivo (apenas NF ativas)")
-                st.dataframe(df_erros, use_container_width=True)
-
-                st.download_button(
-                    "Baixar CSV detalhado",
-                    df_erros.to_csv(index=False),
-                    "erros_detalhado.csv",
-                    key="download_erros_detalhado"
-                )
-
-                pdf = generate_pdf(df_erros)
-                st.download_button(
-                    "Baixar PDF de erros",
-                    pdf,
-                    "erros_nfcom.pdf",
-                    mime="application/pdf",
-                    key="download_erros_pdf"
-                )
-
-            # --------- Tab 2: Erros Consolidados ---------
-            with tab2:
-                if df_consolidado is not None and not df_consolidado.empty:
-                    st.dataframe(df_consolidado, use_container_width=True)
-                    st.download_button(
-                        "Baixar CSV consolidado",
-                        df_consolidado.to_csv(index=False),
-                        "erros_consolidados.csv",
-                        key="download_erros_consolidado"
-                    )
-                else:
-                    st.info("Marque 'Consolidar erros iguais' na barra lateral para agrupar ou não há erros.")
-
-            # --------- Tab 3: Faturamento (quando há erros) ---------
-            with tab3:
-                st.subheader("Relatório de faturamento por CClass e Item (aba)")
-                if not df_itens.empty:
-                    st.markdown("### Totais por Item (cClass + descrição)")
-                    st.dataframe(df_item_cclass, use_container_width=True)
-
-                    st.download_button(
-                        "Baixar CSV – Totais por item",
-                        df_item_cclass.to_csv(index=False),
-                        "faturamento_por_item_cclass.csv",
-                        key="download_item_cclass_tab"
-                    )
-
-                    st.markdown("### Totais por CClass")
-                    st.dataframe(df_cclass, use_container_width=True)
-
-                    st.download_button(
-                        "Baixar CSV – Totais por CClass",
-                        df_cclass.to_csv(index=False),
-                        "faturamento_por_cclass.csv",
-                        key="download_cclass_tab"
-                    )
-                else:
-                    st.info("Nenhum item de faturamento encontrado.")
-
-            # --------- Tab 4: Dashboard ---------
-            with tab4:
-                st.subheader("Dashboard de erros (apenas NF ativas)")
-
-                total_erros = len(df_erros)
-                total_arquivos = df_erros["arquivo"].nunique()
-                total_regras = df_erros["regra_id"].nunique()
-
-                colm1, colm2, colm3 = st.columns(3)
-                colm1.metric("Total de erros/alertas", total_erros)
-                colm2.metric("Arquivos afetados", total_arquivos)
-                colm3.metric("Regras diferentes acionadas", total_regras)
-
-                st.markdown("### Erros por regra")
-                por_regra = df_erros.groupby("regra_id").size()
-                st.bar_chart(por_regra)
-
-                st.markdown("### Erros por arquivo")
-                por_arquivo = df_erros.groupby("arquivo").size()
-                st.bar_chart(por_arquivo)
-
-                if "nivel" in df_erros.columns:
-                    st.markdown("### Erros por nível")
-                    por_nivel = df_erros.groupby("nivel").size()
-                    st.bar_chart(por_nivel)
-        else:
-            df_erros = pd.DataFrame()
-            df_consolidado = None
-
-        # ====================================================
-        # Faturamento SEMPRE visível (com ou sem erros)
-        # ====================================================
-        st.subheader("Relatório de faturamento por CClass e Item (sempre disponível – apenas NF ativas)")
-        if not df_itens.empty:
-            st.markdown("### Totais por Item (cClass + descrição)")
-            st.dataframe(df_item_cclass, use_container_width=True)
-
-            st.download_button(
-                "Baixar CSV – Totais por item",
-                df_item_cclass.to_csv(index=False),
-                "faturamento_por_item_cclass.csv",
-                key="download_item_cclass_global"
-            )
-
-            st.markdown("### Totais por CClass")
-            st.dataframe(df_cclass, use_container_width=True)
-
-            st.download_button(
-                "Baixar CSV – Totais por CClass",
-                df_cclass.to_csv(index=False),
-                "faturamento_por_cclass.csv",
-                key="download_cclass_global"
-            )
-
-            st.markdown("### Detalhamento completo dos itens (para conferência)")
-            st.dataframe(df_itens, use_container_width=True)
-        else:
-            st.info("Nenhum item de faturamento encontrado nos XML válidos (ativos).")
-
-        # ====================================================
-        # Resumo de cancelamentos (eventos + lista)
-        # ====================================================
-        if canceled_xmls:
-            qtd_ativos = len(xml_resultados)
-            qtd_cancelados = len(canceled_xmls)
-
-            st.subheader("Resumo de cancelamentos aplicados")
-            st.write(f"XML ATIVOS (mantidos em ZIP/relatórios): **{qtd_ativos}**")
-            st.write(f"XML CANCELADOS (eventos ou listados): **{qtd_cancelados}**")
-
-            st.markdown("XML cancelados identificados (eventos de cancelamento ou chaves em lista):")
-            df_cancel = pd.DataFrame(canceled_xmls)
-            st.dataframe(df_cancel, use_container_width=True)
-
-            pdf_cancel = generate_pdf_cancelamento(qtd_ativos, qtd_cancelados)
-            st.download_button(
-                "Baixar PDF – Resumo de cancelamentos",
-                data=pdf_cancel,
-                file_name="resumo_cancelamentos_nfcom.pdf",
-                mime="application/pdf",
-                key="download_pdf_cancelamento"
-            )
-
-        # ====================================================
-        # Excel completo
-        # ====================================================
-        excel_bytes = generate_excel_report(
-            df_erros=df_erros if not df_erros.empty else None,
-            df_consolidado=df_consolidado,
-            df_item_cclass=df_item_cclass if not df_item_cclass.empty else None,
-            df_cclass=df_cclass if not df_cclass.empty else None,
-            df_detalhe=df_itens if not df_itens.empty else None,
-            df_status_xml=df_status_xml if not df_status_xml.empty else None,
-            df_resumo=df_resumo if not df_resumo.empty else None,
-            df_class_sug=divergentes if not divergentes.empty else None,
+    # ZIP ativos
+    if r["xml_resultados"] and dls.get("zip_ativos"):
+        st.download_button(
+            "Baixar XMLs (corrigidos e sem correção) – apenas ATIVOS",
+            data=dls["zip_ativos"],
+            file_name="xml_nfcom_ativos_processados.zip",
+            mime="application/zip",
+            key="download_zip_xmls_persist"
         )
 
+    df_itens = r["df_itens"]
+    df_erros = r["df_erros"]
+    df_consolidado = r["df_consolidado"]
+    df_item_cclass = r["df_item_cclass"]
+    df_cclass = r["df_cclass"]
+    df_status_xml = r["df_status_xml"]
+    df_resumo = r["df_resumo"]
+    divergentes = r["divergentes"]
+    canceled_xmls = r["canceled_xmls"]
+
+    # Sugestões fortes
+    if not divergentes.empty:
+        st.subheader("Propostas de classificação SCM/SVA (sugestões fortes)")
+        st.info(
+            "A tabela abaixo mostra apenas casos em que a descrição tem palavras-chave claras "
+            "e está em conflito direto com o cClass (alta probabilidade de erro de classificação)."
+        )
+        st.dataframe(
+            divergentes[["arquivo", "descricao", "cClass", "CFOP", "class_cclass", "class_final_sugerida", "motivo_classificacao"]],
+            use_container_width=True
+        )
+    else:
+        st.info("Nenhuma sugestão forte de reclassificação SCM/SVA foi identificada.")
+
+    # Se houver erros -> tabs
+    if not df_erros.empty:
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Erros Detalhados",
+            "Erros Consolidados",
+            "Faturamento por CClass",
+            "Dashboard"
+        ])
+
+        with tab1:
+            st.subheader("Erros por arquivo (apenas NF ativas)")
+            st.dataframe(df_erros, use_container_width=True)
+            st.download_button(
+                "Baixar CSV detalhado",
+                data=df_erros.to_csv(index=False),
+                file_name="erros_detalhado.csv",
+                key="download_erros_detalhado_persist"
+            )
+            if dls.get("pdf_erros"):
+                st.download_button(
+                    "Baixar PDF de erros",
+                    data=dls["pdf_erros"],
+                    file_name="erros_nfcom.pdf",
+                    mime="application/pdf",
+                    key="download_erros_pdf_persist"
+                )
+
+        with tab2:
+            if df_consolidado is not None and not df_consolidado.empty:
+                st.dataframe(df_consolidado, use_container_width=True)
+                st.download_button(
+                    "Baixar CSV consolidado",
+                    data=df_consolidado.to_csv(index=False),
+                    file_name="erros_consolidados.csv",
+                    key="download_erros_consolidado_persist"
+                )
+            else:
+                st.info("Marque 'Consolidar erros iguais' na barra lateral para agrupar ou não há erros.")
+
+        with tab3:
+            st.subheader("Relatório de faturamento por CClass e Item (aba)")
+            if not df_itens.empty:
+                st.markdown("### Totais por Item (cClass + descrição)")
+                st.dataframe(df_item_cclass, use_container_width=True)
+                st.download_button(
+                    "Baixar CSV – Totais por item",
+                    data=df_item_cclass.to_csv(index=False),
+                    file_name="faturamento_por_item_cclass.csv",
+                    key="download_item_cclass_tab_persist"
+                )
+
+                st.markdown("### Totais por CClass")
+                st.dataframe(df_cclass, use_container_width=True)
+                st.download_button(
+                    "Baixar CSV – Totais por CClass",
+                    data=df_cclass.to_csv(index=False),
+                    file_name="faturamento_por_cclass.csv",
+                    key="download_cclass_tab_persist"
+                )
+            else:
+                st.info("Nenhum item de faturamento encontrado.")
+
+        with tab4:
+            st.subheader("Dashboard de erros (apenas NF ativas)")
+            total_erros = len(df_erros)
+            total_arquivos = df_erros["arquivo"].nunique()
+            total_regras = df_erros["regra_id"].nunique()
+
+            colm1, colm2, colm3 = st.columns(3)
+            colm1.metric("Total de erros/alertas", total_erros)
+            colm2.metric("Arquivos afetados", total_arquivos)
+            colm3.metric("Regras diferentes acionadas", total_regras)
+
+            st.markdown("### Erros por regra")
+            st.bar_chart(df_erros.groupby("regra_id").size())
+
+            st.markdown("### Erros por arquivo")
+            st.bar_chart(df_erros.groupby("arquivo").size())
+
+            if "nivel" in df_erros.columns:
+                st.markdown("### Erros por nível")
+                st.bar_chart(df_erros.groupby("nivel").size())
+
+    # Faturamento sempre
+    st.subheader("Relatório de faturamento por CClass e Item (sempre disponível – apenas NF ativas)")
+    if not df_itens.empty:
+        st.markdown("### Totais por Item (cClass + descrição)")
+        st.dataframe(df_item_cclass, use_container_width=True)
+        st.download_button(
+            "Baixar CSV – Totais por item",
+            data=df_item_cclass.to_csv(index=False),
+            file_name="faturamento_por_item_cclass.csv",
+            key="download_item_cclass_global_persist"
+        )
+
+        st.markdown("### Totais por CClass")
+        st.dataframe(df_cclass, use_container_width=True)
+        st.download_button(
+            "Baixar CSV – Totais por CClass",
+            data=df_cclass.to_csv(index=False),
+            file_name="faturamento_por_cclass.csv",
+            key="download_cclass_global_persist"
+        )
+
+        st.markdown("### Detalhamento completo dos itens (para conferência)")
+        st.dataframe(df_itens, use_container_width=True)
+    else:
+        st.info("Nenhum item de faturamento encontrado nos XML válidos (ativos).")
+
+    # Resumo cancelamentos
+    if canceled_xmls:
+        qtd_ativos = len(r["xml_resultados"])
+        qtd_cancelados = len(canceled_xmls)
+
+        st.subheader("Resumo de cancelamentos aplicados")
+        st.write(f"XML ATIVOS (mantidos em ZIP/relatórios): **{qtd_ativos}**")
+        st.write(f"XML CANCELADOS (eventos ou listados): **{qtd_cancelados}**")
+
+        st.markdown("XML cancelados identificados (eventos de cancelamento ou chaves em lista):")
+        st.dataframe(pd.DataFrame(canceled_xmls), use_container_width=True)
+
+        if dls.get("pdf_cancel"):
+            st.download_button(
+                "Baixar PDF – Resumo de cancelamentos",
+                data=dls["pdf_cancel"],
+                file_name="resumo_cancelamentos_nfcom.pdf",
+                mime="application/pdf",
+                key="download_pdf_cancelamento_persist"
+            )
+
+    # Excel completo
+    if dls.get("excel"):
         st.download_button(
             "Baixar Relatório Excel Completo",
-            data=excel_bytes,
+            data=dls["excel"],
             file_name="relatorio_nfcom.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_excel_relatorio"
+            key="download_excel_relatorio_persist"
         )
 
     st.markdown(
@@ -1614,3 +1464,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
